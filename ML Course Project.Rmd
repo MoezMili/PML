@@ -1,0 +1,102 @@
+---
+title: "Machine Learning Course Project"
+author: "M. Mili"
+date: "25 mars 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+
+This study is about human activity. People tend to quantify their activity but rarely check how well they do it. 
+The goal of this project is to predict the manner in which they did the exercise, using data from different captors.
+
+Credits for the data collection:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. 
+
+# Data Analysis
+A quick check of the data, shows that we have many missing values ('#DIV/0!', '', 'NA'), so as a first step we'll try to clean the data and keep only the variables which are at least 90% complete.
+Also the seven first columns are not useful for this analysis, so we need to discard them too.
+We'll also use doParalell and snow to speed up the process.
+
+```{r datasets}
+library("caret")
+library("corrplot")
+library("doParallel")
+library("snow")
+
+workers=makeCluster(4,type="SOCK")
+registerDoParallel(workers)
+foreach(i=1:4) %dopar% Sys.getpid()
+ 
+set.seed(159)
+training <- read.csv("./pml-training.csv",sep=",",na.strings=c('#DIV/0!', '', 'NA'))
+testing <- read.csv("./pml-testing.csv",sep=",",na.strings=c('#DIV/0!', '', 'NA'))
+
+colok <- NULL
+training_clean <- training[-c(1:7,160)]
+for(i in seq(1,ncol(training_clean)))
+    if ((sum(is.na(training_clean[,i]))/nrow(training_clean)) < .1)
+        colok <- c(colok,i)
+training_clean <- training_clean[colok]
+training_clean$classe <- training$classe
+
+```
+
+# Check Predictors Correlation
+The number of predictors: `r ncol(training_clean) - 1` is high.
+Let's check the correlation between them.
+
+```{r CheckPredCorr}
+
+matcor <- abs(cor(training_clean[,-53]))
+diag(matcor) <- 0
+corrplot(matcor,tl.cex=0.5,cl.cex=0.5,method="square")
+```
+
+# Reduce the Predictors
+From the correlation matrix plot, we can see that many predictors are highly correlated. Using PCA seems to be a good idea to reduce them. 
+
+```{r RedPredPCA}
+
+pcapreproc <- preProcess(training_clean[,-53],method="pca",thresh = 0.95)
+pcapreproc
+```
+Only `r pcapreproc$numComp` needed to capture `r pcapreproc$thresh * 100` % of the variance
+That's cool ! Let's keep only those for our model.
+
+# Which Model
+Obviously, it is a classification problem. For this the recommended model is Random Forest.
+We'll also use repeated KFolds cross validation to optimize our model.
+Let's try.
+
+```{r BuildModel}
+
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+
+model_rfpca <- train(classe~.,data=training_clean, method="rf", metric="Accuracy", trControl=control, preprocess = c(method="pca",thresh=0.95))
+model_rfpca
+predict_rfpca <- predict(model_rfpca,newdata=training_clean)
+confusionMatrix(predict_rfpca,training_clean$classe)
+
+```
+The accuracy of our model is quite good. We can rely on it.
+
+# Clean Testing data set
+We need to reshape the testing data set the same way as we did for the training one: We need to keep only the same columns.
+
+```{r CleanTest}
+testing_clean <- testing[names(training_clean[,-53])]
+```
+
+# Predict on testing data set
+Using our model we can predict on the testing data set:
+
+```{r ApplyTest}
+testing_prediction <- predict(model_rfpca,newdata=testing_clean)
+testing_prediction
+```
